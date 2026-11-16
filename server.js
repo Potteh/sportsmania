@@ -26,6 +26,30 @@ function normalize(event) {
     broadcast:c.broadcasts?.flatMap(b=>b.names||[])?.join(', ') || '',
     broadcasts:[...new Set([...(c.broadcasts||[]).flatMap(b=>b.names||[]),...(c.geoBroadcasts||[]).map(b=>b.media?.shortName||b.media?.name).filter(Boolean)])]};
 }
+async function getPlays(league,id){
+  const key='plays:'+league+':'+id, now=Date.now(), prior=cache.get(key);
+  if(prior && now-prior.time<12000)return prior.data;
+  const endpoint='https://site.api.espn.com/apis/site/v2/sports/'+leagues[league]+'/summary?event='+encodeURIComponent(id);
+  try{
+    const response=await fetch(endpoint,{headers:{'User-Agent':'SportsMania/1.0'},signal:AbortSignal.timeout(9000)});
+    if(!response.ok)throw Error('Provider returned '+response.status);
+    const payload=await response.json();
+    const groups=payload.drives?.previous||[];
+    const raw=Array.isArray(payload.plays)&&payload.plays.length?payload.plays:
+      groups.flatMap(d=>d.plays||[]);
+    const fallback=payload.scoringPlays||[];
+    const source=raw.length?raw:fallback;
+    const plays=source.map((p,i)=>({
+      id:String(p.id||i),text:p.text||p.description||p.shortText||p.type?.text||'Play',
+      period:p.period?.displayValue||p.period?.number||p.period||'',
+      clock:p.clock?.displayValue||p.clock||'',
+      team:p.team?.displayName||p.team?.abbreviation||'',
+      scoring:!!p.scoringPlay,score:p.homeScore!=null&&p.awayScore!=null?String(p.awayScore)+'–'+String(p.homeScore):''
+    })).filter(p=>p.text).slice(-250).reverse();
+    const data={league,id,plays,updatedAt:new Date().toISOString(),available:plays.length>0};
+    cache.set(key,{time:now,data});return data;
+  }catch(e){if(prior)return {...prior.data,stale:true};throw e;}
+}
 async function getScores(league,date){
   const key=league+':'+date, now=Date.now(), prior=cache.get(key);
   if(prior && now-prior.time<12000)return prior.data;
@@ -42,6 +66,13 @@ const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8',
 http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://localhost');
+    if(url.pathname==='/api/plays'){
+      const league=(url.searchParams.get('league')||'NFL').toUpperCase();
+      const id=url.searchParams.get('id')||'';
+      if(!Object.hasOwn(leagues,league)||!/^[a-zA-Z0-9_-]{1,80}$/.test(id)){res.writeHead(400);res.end('Invalid league or event');return;}
+      const data=await getPlays(league,id);
+      res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(data));return;
+    }
     if(url.pathname==='/api/scores'){
       const league=(url.searchParams.get('league')||'NFL').toUpperCase();
       const date=url.searchParams.get('date')||ymd(new Date());
