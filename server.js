@@ -23,7 +23,8 @@ function normalize(event) {
   return {id:event.id, name:event.name, date:event.date, status:event.status?.type?.name || '',
     detail:event.status?.type?.shortDetail || event.status?.type?.detail || '',
     state:event.status?.type?.state || 'pre', teams, venue:c.venue?.fullName || '',
-    broadcast:c.broadcasts?.flatMap(b=>b.names||[])?.join(', ') || ''};
+    broadcast:c.broadcasts?.flatMap(b=>b.names||[])?.join(', ') || '',
+    broadcasts:[...new Set([...(c.broadcasts||[]).flatMap(b=>b.names||[]),...(c.geoBroadcasts||[]).map(b=>b.media?.shortName||b.media?.name).filter(Boolean)])]};
 }
 async function getScores(league,date){
   const key=league+':'+date, now=Date.now(), prior=cache.get(key);
