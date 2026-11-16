@@ -3,6 +3,21 @@ const labels={NCAAF:'NCAA Football',NCAAB:'NCAA Basketball',EPL:'Premier League'
 const $=s=>document.querySelector(s);
 const today=()=>{const d=new Date();return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')};
 const state={league:'NFL',date:today(),filter:'all',data:null,request:0};
+const alertSettings=JSON.parse(localStorage.getItem('sportsmania:alerts')||'{"enabled":false}');
+const seenScores=new Map();
+function notifyScores(data){
+ if(!alertSettings.enabled||Notification.permission!=='granted')return;
+ for(const g of data.events||[]){
+  if(!g.teams?.some(t=>favorites.has(t.abbreviation+':'+data.league)))continue;
+  const key=data.league+':'+g.id,signature=g.state+'|'+g.teams.map(t=>t.score).join(':');
+  const old=seenScores.get(key);seenScores.set(key,signature);
+  if(!old||old===signature)return;
+  const previous=old.split('|'),current=signature.split('|');
+  const title=previous[0]!==g.state?(g.state==='in'?'Game started':g.state==='post'?'Final score':'Game update'):'Score update';
+  new Notification(title+' · '+g.name,{body:g.teams.map(t=>t.abbreviation+' '+(t.score??'–')).join(' · '),tag:key});
+ }
+}
+
 const favorites=new Set(JSON.parse(localStorage.getItem('sportsmania:favorites')||'[]'));
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function dateKey(){return state.date.replaceAll('-','')}
@@ -88,12 +103,20 @@ async function gameDetail(id){
  try{const response=await fetch(api('game?league='+league+'&id='+encodeURIComponent(id)));if(!response.ok)throw Error('Unavailable');const data=await response.json();detailPanels.set(key,{open:true,loading:false,data});if(state.league===league)draw();}
  catch{detailPanels.set(key,{open:true,error:true});if(state.league===league)draw();}
 }
+function playerOptions(d){return (d.stats||[]).flatMap(t=>t.groups.flatMap(gr=>gr.athletes.map(a=>({name:a.name,stats:a.stats,group:gr.name,team:t.team})))).map((a,i)=>'<option value="'+i+'">'+esc(a.name+' ('+a.team+' · '+a.group+')')+'</option>').join('');}
+function comparePlayers(panel){
+ const d=detailPanels.get(state.league+':'+panel.closest('[data-game-id]').dataset.gameId)?.data;if(!d)return;
+ const all=(d.stats||[]).flatMap(t=>t.groups.flatMap(gr=>gr.athletes.map(a=>({name:a.name,stats:a.stats,labels:gr.labels,group:gr.name}))));
+ const a=all[Number(panel.querySelector('[data-player-a]').value)],b=all[Number(panel.querySelector('[data-player-b]').value)];
+ const result=panel.querySelector('.compare-result');
+ result.textContent=(!a||!b)?'Select two players.':a.name+' ('+a.group+'): '+(a.stats||[]).join(' / ')+'  VS  '+b.name+' ('+b.group+'): '+(b.stats||[]).join(' / ');
+}
 function gameDetailMarkup(g){
  const p=detailPanels.get(state.league+':'+g.id);
  if(!p?.open)return '<button class="play-toggle" data-game-detail="'+esc(g.id)+'">▤ Game Center</button>';
  const d=p.data;
- const body=p.loading?'Loading game statistics…':p.error?'Game statistics unavailable.':('<h4>Team statistics</h4>'+(d.teamStats?.length?d.teamStats.map(t=>'<h5>'+esc(t.team)+'</h5>'+t.stats.map(s=>'<div class="stat-line"><span>'+esc(s.name)+'</span><b>'+esc(s.value)+'</b></div>').join('')).join(''):'No team statistics available.')+'<h4>Player leaders</h4>'+(d.stats?.length?d.stats.map(t=>'<h5>'+esc(t.team)+'</h5>'+t.groups.map(group=>'<div class="stat-group"><b>'+esc(group.name)+'</b>'+group.athletes.slice(0,5).map(a=>'<div class="stat-line"><span>'+esc(a.name)+'</span><span>'+esc((a.stats||[]).join(' / '))+'</span></div>').join('')+'</div>').join('')).join(''):'No player statistics available.'));
- return '<div class="detail-panel"><button class="play-toggle" data-game-detail="'+esc(g.id)+'">▼ Hide Game Center</button><div class="detail-scroll">'+body+'</div></div>';
+ const body=p.loading?'Loading game statistics…':p.error?'Game statistics unavailable.':('<h4>Scoring timeline</h4>'+(d.scoring?.length?'<ol class="scoring-timeline">'+d.scoring.map(x=>'<li><b>'+esc('P'+x.period+' '+x.clock)+'</b> '+esc(x.text)+'</li>').join('')+'</ol>':'No scoring events available.')+'<h4>Team statistics</h4>'+(d.teamStats?.length?d.teamStats.map(t=>'<h5>'+esc(t.team)+'</h5>'+t.stats.map(s=>'<div class="stat-line"><span>'+esc(s.name)+'</span><b>'+esc(s.value)+'</b></div>').join('')).join(''):'No team statistics available.')+'<h4>Player leaders</h4>'+(d.stats?.length?d.stats.map(t=>'<h5>'+esc(t.team)+'</h5>'+t.groups.map(group=>'<div class="stat-group"><b>'+esc(group.name)+'</b>'+group.athletes.slice(0,5).map(a=>'<div class="stat-line"><span>'+esc(a.name)+'</span><span>'+esc((a.stats||[]).join(' / '))+'</span></div>').join('')+'</div>').join('')).join(''):'No player statistics available.')+'<h4>Compare players</h4><div class="compare-controls"><select data-player-a><option value="">Choose player A</option>'+playerOptions(d)+'</select><select data-player-b><option value="">Choose player B</option>'+playerOptions(d)+'</select><button data-compare>Compare</button></div><div class="compare-result"></div>');
+ return '<div class="detail-panel" data-game-id="'+esc(g.id)+'"><button class="play-toggle" data-game-detail="'+esc(g.id)+'">▼ Hide Game Center</button><div class="detail-scroll">'+body+'</div></div>';
 }
 function extrasMarkup(g){
  const p=g.prediction,odds=g.odds||[];
@@ -104,7 +127,7 @@ function extrasMarkup(g){
 const chats=new Map();
 function chatMarkup(g){
  const key=state.league+':'+g.id,c=chats.get(key);if(!c?.open)return '';
- return '<div class="chat-panel"><div class="chat-log">'+(c.messages||[]).map(m=>'<div><small>'+esc(m.name)+' · '+esc(new Date(m.time).toLocaleTimeString())+'</small><p>'+esc(m.message)+'</p></div>').join('')+'</div><form data-chat-form="'+esc(g.id)+'"><input name="name" maxlength="24" placeholder="Nickname" value="'+esc(localStorage.getItem('sportsmania:nick')||'')+'" required><input name="message" maxlength="400" placeholder="Message" required><button type="submit">Send</button></form><small>Public chat. Do not share personal information. Messages are stored on this server.</small></div>';
+ return '<div class="chat-panel"><div class="chat-log">'+(c.messages||[]).map(m=>'<div><small>'+esc(m.name)+' · '+esc(new Date(m.time).toLocaleTimeString())+'</small><p>'+esc(m.message)+'</p><button class="report-btn" data-report="'+esc(m.id)+'" data-room="'+esc(key)+'">Report</button></div>').join('')+'</div><form data-chat-form="'+esc(g.id)+'"><input name="name" maxlength="24" placeholder="Nickname" value="'+esc(localStorage.getItem('sportsmania:nick')||'')+'" required><input name="message" maxlength="400" placeholder="Message" required><button type="submit">Send</button></form><small>Public chat. Do not share personal information. Messages are stored on this server.</small></div>';
 }
 async function chatLoad(id){
  const league=state.league,key=league+':'+id,c=chats.get(key)||{};if(!c.open)return;
@@ -124,12 +147,12 @@ function draw(){
 }
 async function load(){
  const id=++state.request;$('#games').innerHTML='<div class="empty">Loading '+esc(state.league)+' scores…</div>';
- try{const r=await fetch(new URL('api/scores?league='+state.league+'&date='+dateKey(),document.baseURI),{cache:'no-store'});if(!r.ok)throw Error('Provider unavailable');const data=await r.json();if(id!==state.request)return;state.data=data;$('#lastUpdate').textContent='Updated '+new Date(data.updatedAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'});if(featureState.view==='scores')draw();}
+ try{const r=await fetch(new URL('api/scores?league='+state.league+'&date='+dateKey(),document.baseURI),{cache:'no-store'});if(!r.ok)throw Error('Provider unavailable');const data=await r.json();if(id!==state.request)return;state.data=data;notifyScores(data);$('#lastUpdate').textContent='Updated '+new Date(data.updatedAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'});if(featureState.view==='scores')draw();}
  catch(e){if(id===state.request){$('#games').innerHTML='<div class="empty error">Unable to load scores. Please try Refresh.</div>';$('#summary').textContent='';}}
 }
 $('#leagues').addEventListener('click',e=>{const b=e.target.closest('[data-league]');if(!b)return;state.league=b.dataset.league;drawLeagues();load();featureLoad()});
 $('#filters').addEventListener('click',e=>{const b=e.target.closest('[data-filter]');if(!b)return;state.filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));draw()});
-$('#games').addEventListener('click',e=>{const detail=e.target.closest('[data-game-detail]');if(detail){gameDetail(detail.dataset.gameDetail);return;}const chat=e.target.closest('[data-chat-toggle]');if(chat){const key=state.league+':'+chat.dataset.chatToggle,c=chats.get(key)||{};chats.set(key,{...c,open:!c.open});draw();if(!c.open)chatLoad(chat.dataset.chatToggle);return;}const toggle=e.target.closest('[data-play-toggle]');if(toggle){const id=toggle.dataset.playToggle,key=state.league+':'+id,old=playPanels.get(key);if(old?.open){playPanels.set(key,{...old,open:false});draw()}else loadPlays(id);return;}const refresh=e.target.closest('[data-play-refresh]');if(refresh){loadPlays(refresh.dataset.playRefresh,true);return;}const b=e.target.closest('[data-fav]');if(!b)return;const v=b.dataset.fav;favorites.has(v)?favorites.delete(v):favorites.add(v);localStorage.setItem('sportsmania:favorites',JSON.stringify([...favorites]));draw()});
+$('#games').addEventListener('click',e=>{const compare=e.target.closest('[data-compare]');if(compare){comparePlayers(compare.closest('.detail-panel'));return;}const report=e.target.closest('[data-report]');if(report){if(!confirm('Report this message to moderators?'))return;fetch(api('moderation'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'report',room:report.dataset.room,id:report.dataset.report})}).then(r=>{alert(r.ok?'Report submitted':'Unable to report')});return;}const detail=e.target.closest('[data-game-detail]');if(detail){gameDetail(detail.dataset.gameDetail);return;}const chat=e.target.closest('[data-chat-toggle]');if(chat){const key=state.league+':'+chat.dataset.chatToggle,c=chats.get(key)||{};chats.set(key,{...c,open:!c.open});draw();if(!c.open)chatLoad(chat.dataset.chatToggle);return;}const toggle=e.target.closest('[data-play-toggle]');if(toggle){const id=toggle.dataset.playToggle,key=state.league+':'+id,old=playPanels.get(key);if(old?.open){playPanels.set(key,{...old,open:false});draw()}else loadPlays(id);return;}const refresh=e.target.closest('[data-play-refresh]');if(refresh){loadPlays(refresh.dataset.playRefresh,true);return;}const b=e.target.closest('[data-fav]');if(!b)return;const v=b.dataset.fav;favorites.has(v)?favorites.delete(v):favorites.add(v);localStorage.setItem('sportsmania:favorites',JSON.stringify([...favorites]));draw()});
 $('#prev').onclick=()=>changeDay(-1);$('#next').onclick=()=>changeDay(1);$('#today').onclick=()=>setDate(today());$('#date').onchange=e=>{if(e.target.value)setDate(e.target.value)};$('#refresh').onclick=load;
 $('#date').value=state.date;drawLeagues();clock();setInterval(clock,30000);load();setInterval(()=>{if(!document.hidden)load()},15000);
 
@@ -137,3 +160,6 @@ $('#feature-panel').hidden=true;
 document.querySelector('.feature-nav').addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(!b)return;featureState.view=b.dataset.view;document.querySelectorAll('[data-view]').forEach(x=>x.classList.toggle('active',x===b));featureLoad();});
 $('#games').addEventListener('submit',async e=>{const form=e.target.closest('[data-chat-form]');if(!form)return;e.preventDefault();const id=form.dataset.chatForm,league=state.league,room=league+':'+id,name=form.elements.name.value.trim(),message=form.elements.message.value.trim();if(!message)return;localStorage.setItem('sportsmania:nick',name);try{const r=await fetch(api('chat?room='+encodeURIComponent(room)),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,message})});const data=await r.json();if(!r.ok)throw Error(data.error||'Send failed');await chatLoad(id);}catch(err){alert(err.message)}});
 setInterval(()=>{if(document.hidden)return;for(const [key,c] of chats){if(c.open&&key.startsWith(state.league+':'))chatLoad(key.slice(key.indexOf(':')+1));}},12000);
+
+const alertButton=document.createElement('button');alertButton.className='refresh';alertButton.id='alert-toggle';alertButton.textContent=alertSettings.enabled?'🔔 Alerts on':'🔕 Enable favorite alerts';document.querySelector('.toolbar').append(alertButton);
+alertButton.onclick=async()=>{if(alertSettings.enabled){alertSettings.enabled=false;}else{if(!('Notification' in window)){alert('This browser does not support notifications.');return;}const permission=await Notification.requestPermission();if(permission!=='granted'){alert('Notifications were not permitted.');return;}alertSettings.enabled=true;}localStorage.setItem('sportsmania:alerts',JSON.stringify(alertSettings));alertButton.textContent=alertSettings.enabled?'🔔 Alerts on':'🔕 Enable favorite alerts';};
