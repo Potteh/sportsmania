@@ -109,7 +109,10 @@ function comparePlayers(panel){
  const all=(d.stats||[]).flatMap(t=>t.groups.flatMap(gr=>gr.athletes.map(a=>({name:a.name,stats:a.stats,labels:gr.labels,group:gr.name}))));
  const a=all[Number(panel.querySelector('[data-player-a]').value)],b=all[Number(panel.querySelector('[data-player-b]').value)];
  const result=panel.querySelector('.compare-result');
- result.textContent=(!a||!b)?'Select two players.':a.name+' ('+a.group+'): '+(a.stats||[]).join(' / ')+'  VS  '+b.name+' ('+b.group+'): '+(b.stats||[]).join(' / ');
+ if(!a||!b){result.textContent='Select two players.';return;}
+ const labels=a.group===b.group?a.labels||[]:[],values=[a.stats||[],b.stats||[]];
+ const rows=labels.length?labels.map((label,i)=>({label,left:values[0][i]||'—',right:values[1][i]||'—'})):values[0].map((v,i)=>({label:'Stat '+(i+1),left:v,right:values[1][i]||'—'}));
+ result.innerHTML='<h5>'+esc(a.name)+' vs '+esc(b.name)+'</h5>'+rows.map(r=>{const av=Number(r.left),bv=Number(r.right),max=Math.max(av,bv,1);return '<div class="compare-chart-row"><span>'+esc(r.label)+'</span><div class="compare-bars"><div style="width:'+ (Number.isFinite(av)?Math.max(2,av/max*100):0)+'%"></div><div style="width:'+(Number.isFinite(bv)?Math.max(2,bv/max*100):0)+'%"></div></div><small>'+esc(r.left)+' / '+esc(r.right)+'</small></div>';}).join('')+'<small>Top bar: '+esc(a.name)+' · Bottom bar: '+esc(b.name)+'. Values are comparable only for the same stat category.</small>';
 }
 function gameDetailMarkup(g){
  const p=detailPanels.get(state.league+':'+g.id);
@@ -163,3 +166,17 @@ setInterval(()=>{if(document.hidden)return;for(const [key,c] of chats){if(c.open
 
 const alertButton=document.createElement('button');alertButton.className='refresh';alertButton.id='alert-toggle';alertButton.textContent=alertSettings.enabled?'🔔 Alerts on':'🔕 Enable favorite alerts';document.querySelector('.toolbar').append(alertButton);
 alertButton.onclick=async()=>{if(alertSettings.enabled){alertSettings.enabled=false;}else{if(!('Notification' in window)){alert('This browser does not support notifications.');return;}const permission=await Notification.requestPermission();if(permission!=='granted'){alert('Notifications were not permitted.');return;}alertSettings.enabled=true;}localStorage.setItem('sportsmania:alerts',JSON.stringify(alertSettings));alertButton.textContent=alertSettings.enabled?'🔔 Alerts on':'🔕 Enable favorite alerts';};
+
+function urlBase64ToUint8Array(base64){const padding='='.repeat((4-base64.length%4)%4),raw=atob((base64+padding).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(raw,c=>c.charCodeAt(0));}
+async function syncPush(enabled){
+ const config=await (await fetch(api('push/config'))).json();
+ if(!config.enabled)throw Error('Server push keys are not configured yet.');
+ if(!('serviceWorker' in navigator)||!('PushManager' in window))throw Error('This browser does not support background push.');
+ const registration=await navigator.serviceWorker.register(new URL('sw.js',document.baseURI),{scope:'./'});
+ let subscription=await registration.pushManager.getSubscription();
+ if(enabled&&!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(config.publicKey)});
+ if(subscription){const response=await fetch(api('push/subscribe'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription,teams:[...favorites],enabled})});if(!response.ok)throw Error('Unable to save subscription');}
+}
+const oldAlertHandler=alertButton.onclick;
+alertButton.onclick=async()=>{await oldAlertHandler();try{await syncPush(alertSettings.enabled);alertButton.textContent=alertSettings.enabled?'🔔 Background alerts on':'🔕 Enable favorite alerts';}catch(e){if(alertSettings.enabled)alert(e.message+' In-page alerts remain available.');}};
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&alertSettings.enabled)syncPush(true).catch(()=>{});});
