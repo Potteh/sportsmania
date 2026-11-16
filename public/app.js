@@ -27,13 +27,19 @@ const watchSites=[
  [/^Apple TV(\+)?$|^MLS Season Pass$/i,'https://tv.apple.com/'],
  [/^Paramount\+$/i,'https://www.paramountplus.com/sports/']
 ];
+function googleStreamLink(g){
+ const teams=(g.teams||[]).map(t=>t.name).filter(Boolean).join(' vs ');
+ const date=String(g.date||'').slice(0,10);
+ const query=[teams||g.name,labels[state.league]||state.league,date,'watch live stream'].filter(Boolean).join(' ');
+ return '<a class="watch-link" href="https://www.google.com/search?q='+encodeURIComponent(query)+'" target="_blank" rel="noopener noreferrer" title="Search Google for this game; results are unverified">🔎 Find streams on Google ↗</a>';
+}
 function watch(g){
  const names=[...new Set([...(g.broadcasts||[]),...(g.broadcast||'').split(',')].map(x=>x.trim()).filter(Boolean))];
- if(!names.length)return '<div class="watch"><span class="watch-title">📺 Where to watch</span><span class="watch-muted">Broadcast information not yet available</span></div>';
+ if(!names.length)return '<div class="watch"><span class="watch-title">📺 Where to watch</span><div class="watch-options">'+googleStreamLink(g)+'</div><span class="watch-muted">Google results are not verified for availability, safety, or broadcast rights.</span></div>';
  return '<div class="watch"><span class="watch-title">📺 Where to watch</span><div class="watch-options">'+names.map(name=>{
  const site=watchSites.find(([pattern])=>pattern.test(name));
  return site?'<a href="'+esc(site[1])+'" target="_blank" rel="noopener noreferrer" class="watch-link" title="Open official provider website">'+esc(name)+' ↗</a>':'<span class="watch-channel">'+esc(name)+'</span>';
- }).join('')+'</div><span class="watch-muted">Availability depends on your region and subscription. Links open provider sites, not necessarily the game stream.</span></div>';
+ }).join('')+googleStreamLink(g)+'</div><span class="watch-muted">Google results are unverified. Availability depends on your region and subscription. Links open provider sites, not necessarily the game stream.</span></div>';
 }
 const playPanels=new Map();
 function playMarkup(g){
