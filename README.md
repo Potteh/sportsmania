@@ -84,3 +84,9 @@ All features use built-in Node.js APIs with no new npm dependencies. The site's 
 - Sending chat now requires a registered account. Existing historical nickname messages remain readable. Moderators can ban/unban and mute/unmute accounts from the dashboard; nickname moderation remains for legacy messages.
 - Nginx must forward WebSocket upgrade headers for the SportsMania location. Add `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";` to its existing `location /sportsmania/` block. Preserve existing proxy_pass path rewriting.
 - Production hardening still needed: stronger per-account and per-IP rate limits, persistent sessions/revocation, email verification, password reset, CSRF and security headers, audit logs, durable moderation deletion and database migrations. Do not treat this as production-grade identity management.
+
+## Profiles and account recovery
+- Signed-in users may choose from predefined emoji avatars and save favorites to their account; favorites sync on sign-in and on subsequent changes. Existing local favorites are imported if the account has no saved favorites.
+- Users may change passwords by providing their current password. This revokes in-memory sessions; sign in again afterward.
+- Password recovery is **administrator-assisted**, not email-based. The moderator dashboard issues a one-time 15-minute reset code for an account; provide it privately to the verified account owner. Reset codes exist only in server memory and disappear on restart. Verify ownership out-of-band before issuing codes. No SMTP credentials or external email provider is required.
+- This is a prototype: add email verification, self-service reset delivery, persistent revocable sessions, stronger abuse protection and database-backed storage before large-scale public deployment.
