@@ -14,6 +14,13 @@ const leagues = {
 const cache = new Map();
 const chatRooms=new Map(), chatRate=new Map();
 const CHAT_FILE=path.join(root,'data','chat.jsonl');
+const moderation={blocked:new Set(),muted:new Map(),reports:[]};
+const MOD_FILE=path.join(root,'data','moderation.json');
+try{const m=JSON.parse(await readFile(MOD_FILE,'utf8'));moderation.blocked=new Set(m.blocked||[]);moderation.muted=new Map(m.muted||[]);moderation.reports=m.reports||[];}catch{}
+const saveModeration=async()=>{await mkdir(path.dirname(MOD_FILE),{recursive:true});await (await import('node:fs/promises')).writeFile(MOD_FILE,JSON.stringify({blocked:[...moderation.blocked],muted:[...moderation.muted],reports:moderation.reports.slice(-500)}));};
+const adminToken=process.env.SPORTSMANIA_ADMIN_TOKEN||'';
+const cleanName=s=>String(s||'').trim().slice(0,24).toLowerCase();
+
 try { const lines=(await readFile(CHAT_FILE,'utf8')).trim().split('\n').slice(-1500);for(const line of lines){try{const msg=JSON.parse(line);if(!chatRooms.has(msg.room))chatRooms.set(msg.room,[]);chatRooms.get(msg.room).push(msg);}catch{}}for(const [key,items] of chatRooms)chatRooms.set(key,items.slice(-100));}catch{}
 const json=(res,data,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(data));};
 function validLeague(league){return Object.hasOwn(leagues,league)}
@@ -109,7 +116,27 @@ http.createServer(async(req,res)=>{
       return json(res,{game:raw.header?.competitions?.[0]?.competitors?.map(t=>({name:t.team?.displayName,score:t.score,homeAway:t.homeAway}))||[],
         stats:(box.players||[]).map(t=>({team:t.team?.displayName,groups:(t.statistics||[]).map(s=>({name:s.name,labels:s.labels,athletes:(s.athletes||[]).slice(0,8).map(a=>({name:a.athlete?.displayName,stats:a.stats}))}))})),
         teamStats:(box.teams||[]).map(t=>({team:t.team?.displayName,stats:(t.statistics||[]).slice(0,25).map(s=>({name:s.label||s.name,value:s.displayValue}))})),
-        note:'Statistics depend on ESPN event coverage',stale:!!raw.stale});
+        scoring:(raw.scoringPlays||[]).map(p=>({text:p.text||p.description||'',clock:p.clock?.displayValue||'',period:p.period?.number||'',team:p.team?.abbreviation||''})).slice(-30),note:'Statistics depend on ESPN event coverage',stale:!!raw.stale});
+    }
+    if(url.pathname==='/api/moderation'){
+      if(req.method!=='POST')return json(res,{error:'Method not allowed'},405);
+      let body='';for await(const chunk of req){body+=chunk;if(body.length>4096)return json(res,{error:'Too large'},413);}
+      let data;try{data=JSON.parse(body)}catch{return json(res,{error:'Invalid JSON'},400)}
+      if(data.action==='report'){
+        const room=String(data.room||''),id=String(data.id||''),reason=String(data.reason||'Inappropriate message').slice(0,200);
+        if(!/^[A-Z]{2,5}:[a-zA-Z0-9_-]{1,80}$/.test(room)||!id||!(chatRooms.get(room)||[]).some(m=>m.id===id))return json(res,{error:'Unknown message'},400);
+        moderation.reports.push({room,id,reason,time:new Date().toISOString()});await saveModeration();return json(res,{ok:true});
+      }
+      if(!adminToken||req.headers['x-admin-token']!==adminToken)return json(res,{error:'Unauthorized'},401);
+      const name=cleanName(data.name);
+      if(data.action==='list')return json(res,{reports:moderation.reports.slice(-100),blocked:[...moderation.blocked],muted:[...moderation.muted]});
+      if(!name)return json(res,{error:'Nickname required'},400);
+      if(data.action==='ban')moderation.blocked.add(name);
+      else if(data.action==='unban')moderation.blocked.delete(name);
+      else if(data.action==='mute')moderation.muted.set(name,Date.now()+Math.min(1440,Math.max(1,Number(data.minutes)||10))*60000);
+      else if(data.action==='unmute')moderation.muted.delete(name);
+      else return json(res,{error:'Unknown action'},400);
+      await saveModeration();return json(res,{ok:true});
     }
     if(url.pathname==='/api/chat'){
       const room=url.searchParams.get('room')||'';
@@ -122,6 +149,9 @@ http.createServer(async(req,res)=>{
       let data;try{data=JSON.parse(body)}catch{return json(res,{error:'Invalid JSON'},400)}
       const name=String(data.name||'Guest').trim().slice(0,24),message=String(data.message||'').trim().slice(0,400);
       if(!message||!name)return json(res,{error:'Name and message required'},400);
+      if(moderation.blocked.has(cleanName(name)))return json(res,{error:'Nickname blocked by moderator'},403);
+      if((moderation.muted.get(cleanName(name))||0)>now)return json(res,{error:'Nickname temporarily muted'},403);
+      if(/https?:\/\/|www\.|discord\.gg\//i.test(message))return json(res,{error:'Links are not permitted in public chat'},400);
       const item={room,name,message,time:new Date().toISOString(),id:now.toString(36)+Math.random().toString(36).slice(2,7)};
       chatRate.set(ip,now);if(!chatRooms.has(room))chatRooms.set(room,[]);const messages=chatRooms.get(room);messages.push(item);if(messages.length>100)messages.shift();
       await mkdir(path.dirname(CHAT_FILE),{recursive:true});await appendFile(CHAT_FILE,JSON.stringify(item)+'\n');
