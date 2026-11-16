@@ -35,6 +35,31 @@ function watch(g){
  return site?'<a href="'+esc(site[1])+'" target="_blank" rel="noopener noreferrer" class="watch-link" title="Open official provider website">'+esc(name)+' ↗</a>':'<span class="watch-channel">'+esc(name)+'</span>';
  }).join('')+'</div><span class="watch-muted">Availability depends on your region and subscription. Links open provider sites, not necessarily the game stream.</span></div>';
 }
+const playPanels=new Map();
+function playMarkup(g){
+ const key=state.league+':'+g.id,p=playPanels.get(key);
+ if(!p?.open)return '<button class="play-toggle" data-play-toggle="'+esc(g.id)+'" aria-expanded="false">▶ Play-by-play</button>';
+ const body=p.loading?'<div class="play-message">Loading plays…</div>':p.error?'<div class="play-message">Unable to load plays. Select Refresh plays to retry.</div>':!p.plays?.length?'<div class="play-message">Play-by-play is not available for this game from the score provider.</div>':p.plays.map(x=>'<div class="play-row '+(x.scoring?'scoring':'')+'"><span class="play-time">'+esc([x.period?'P'+x.period:'',x.clock].filter(Boolean).join(' · '))+'</span><span class="play-text">'+esc(x.text)+'</span>'+(x.score?'<span class="play-score">'+esc(x.score)+'</span>':'')+'</div>').join('');
+ return '<div class="play-section"><button class="play-toggle" data-play-toggle="'+esc(g.id)+'" aria-expanded="true">▼ Hide play-by-play</button><button class="play-refresh" data-play-refresh="'+esc(g.id)+'">↻ Refresh plays</button><div class="play-list">'+body+'</div></div>';
+}
+async function loadPlays(id,force=false){
+ const league=state.league,key=league+':'+id;
+ const old=playPanels.get(key)||{};
+ if(old.loading)return;
+ if(old.plays&&!force){playPanels.set(key,{...old,open:true});draw();return;}
+ const request=(old.request||0)+1;
+ playPanels.set(key,{...old,open:true,loading:true,error:false,request});draw();
+ try{
+  const response=await fetch(new URL('api/plays?league='+encodeURIComponent(league)+'&id='+encodeURIComponent(id),document.baseURI),{cache:'no-store'});
+  if(!response.ok)throw Error('Unavailable');
+  const data=await response.json(),current=playPanels.get(key);
+  if(current?.request!==request)return;
+  playPanels.set(key,{...current,loading:false,plays:data.plays,error:false});if(state.league===league)draw();
+ }catch(e){
+  const current=playPanels.get(key);if(current?.request!==request)return;
+  playPanels.set(key,{...current,loading:false,error:true});if(state.league===league)draw();
+ }
+}
 function draw(){
  const events=(state.data?.events||[]).filter(g=>state.filter==='all'||(state.filter==='favorites'?g.teams.some(t=>favorites.has(t.abbreviation+':'+state.league)):g.state===state.filter));
  $('#summary').textContent=(state.data?.events.length||0)+' games · '+(events.filter(e=>e.state==='in').length)+' live'+(state.data?.stale?' · Showing cached results':'');
@@ -44,7 +69,7 @@ function draw(){
  const teams=[...g.teams].sort((a,b)=>a.homeAway==='away'?-1:b.homeAway==='away'?1:0);
  return '<article class="game"><div class="game-head"><span>'+esc(state.league)+' · '+esc(g.name)+'</span><span class="status '+esc(g.state)+'">'+esc(status)+'</span></div>'+
  teams.map(t=>{const fav=t.abbreviation+':'+state.league;return '<div class="team '+(g.state==='post'&&!t.winner?'loser':'')+'"><button class="star '+(favorites.has(fav)?'saved':'')+'" data-fav="'+esc(fav)+'" title="Toggle favorite" aria-label="Favorite '+esc(t.name)+'">'+(favorites.has(fav)?'★':'☆')+'</button>'+(t.logo?'<img src="'+esc(t.logo)+'" alt="" loading="lazy">':'<span class="placeholder">●</span>')+'<span class="name">'+esc(t.name)+'</span><span class="score">'+esc(t.score??'–')+'</span></div>'}).join('')+
- '<div class="game-foot">'+esc(g.venue||'Venue not listed')+'</div>'+watch(g)+'</article>';
+ '<div class="game-foot">'+esc(g.venue||'Venue not listed')+'</div>'+watch(g)+playMarkup(g)+'</article>';
  }).join('');
 }
 async function load(){
@@ -54,6 +79,6 @@ async function load(){
 }
 $('#leagues').addEventListener('click',e=>{const b=e.target.closest('[data-league]');if(!b)return;state.league=b.dataset.league;drawLeagues();load()});
 $('#filters').addEventListener('click',e=>{const b=e.target.closest('[data-filter]');if(!b)return;state.filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));draw()});
-$('#games').addEventListener('click',e=>{const b=e.target.closest('[data-fav]');if(!b)return;const v=b.dataset.fav;favorites.has(v)?favorites.delete(v):favorites.add(v);localStorage.setItem('sportsmania:favorites',JSON.stringify([...favorites]));draw()});
+$('#games').addEventListener('click',e=>{const toggle=e.target.closest('[data-play-toggle]');if(toggle){const id=toggle.dataset.playToggle,key=state.league+':'+id,old=playPanels.get(key);if(old?.open){playPanels.set(key,{...old,open:false});draw()}else loadPlays(id);return;}const refresh=e.target.closest('[data-play-refresh]');if(refresh){loadPlays(refresh.dataset.playRefresh,true);return;}const b=e.target.closest('[data-fav]');if(!b)return;const v=b.dataset.fav;favorites.has(v)?favorites.delete(v):favorites.add(v);localStorage.setItem('sportsmania:favorites',JSON.stringify([...favorites]));draw()});
 $('#prev').onclick=()=>changeDay(-1);$('#next').onclick=()=>changeDay(1);$('#today').onclick=()=>setDate(today());$('#date').onchange=e=>{if(e.target.value)setDate(e.target.value)};$('#refresh').onclick=load;
 $('#date').value=state.date;drawLeagues();clock();setInterval(clock,30000);load();setInterval(()=>{if(!document.hidden)load()},15000);
