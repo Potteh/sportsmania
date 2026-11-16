@@ -36,7 +36,7 @@ location /sportsmania/ {
 }
 ```
 
-**Note:** The default frontend uses root-relative `/app.js`, `/styles.css`, and `/api/scores`. For a subdirectory deployment, either host SportsMania on a dedicated subdomain or add corresponding Nginx routes for those three paths (and adjust the asset paths if those paths are already used). A dedicated subdomain is recommended to avoid collisions.
+**Subdirectory support is built in:** the frontend uses relative asset URLs and resolves its API endpoint against the current page URL, so both `/` and `/sportsmania/` work without editing files. Keep the trailing slash redirect shown above. This also preserves `/project1/` and the existing `location /` app.
 
 ## Data source and refresh
 
@@ -45,3 +45,7 @@ Server fetches ESPN public scoreboard endpoints and caches for 12 seconds; brows
 ## GitHub workflow
 
 This project is committed to `Potteh/sportsmania`. Future changes made through GitHub connector can be committed on request. For local development use `git add . && git commit -m "Describe change" && git push origin main`; scores themselves update from the API without Git commits.
+
+## Updating an existing VPS checkout
+
+If you previously edited `public/app.js` or `public/index.html` locally to hard-code `/sportsmania/` paths, save your changes first and discard **only those two local path edits** before pulling this update. For example, inspect `git diff` and then run `git restore public/app.js public/index.html` **only if the diff contains no other work you want to keep**; otherwise use `git stash push -u`, pull, and selectively restore your unrelated changes. Then run `git pull --ff-only origin main` and `pm2 restart sportsmania`. Do not blindly `git stash pop` old subdirectory path edits, since the repository now handles paths automatically.
