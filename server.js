@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import webpush from 'web-push';
+import { WebSocketServer } from 'ws';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3100);
@@ -45,6 +47,25 @@ async function pollPush(){
  }
 }
 setInterval(()=>{pollPush().catch(e=>console.error(e));},30000);
+const ACCOUNTS_FILE=path.join(root,'data','accounts.json');
+let accounts=[];try{accounts=JSON.parse(await readFile(ACCOUNTS_FILE,'utf8'));if(!Array.isArray(accounts))accounts=[];}catch{}
+const sessions=new Map(),accountRate=new Map();
+const saveAccounts=async()=>{await mkdir(path.dirname(ACCOUNTS_FILE),{recursive:true});await writeFile(ACCOUNTS_FILE,JSON.stringify(accounts));};
+const hashPassword=(password,salt)=>scryptSync(password,salt,64).toString('hex');
+const accountOf=req=>{const token=(req.headers.authorization||'').match(/^Bearer ([a-f0-9]{64})$/i)?.[1];const session=sessions.get(token);if(!session)return null;if(session.expires<Date.now()){sessions.delete(token);return null;}return accounts.find(a=>a.id===session.id)||null;};
+const safeAccount=a=>({id:a.id,username:a.username,createdAt:a.createdAt});
+const wsServer=new WebSocketServer({noServer:true,maxPayload:2048});
+const sockets=new Set();
+function publish(event){const raw=JSON.stringify(event);for(const socket of sockets)if(socket.readyState===1)socket.send(raw);}
+wsServer.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));socket.send(JSON.stringify({type:'connected'}));});
+async function pollRealtime(){
+ const subs=[...new Set([...sockets].filter(ws=>ws.readyState===1).map(ws=>ws.selection).filter(Boolean))];
+ for(const selection of subs){const [league,date]=selection.split(':');if(!validLeague(league)||!/^[0-9]{8}$/.test(date))continue;
+ try{const data=await getScores(league,date),signature=JSON.stringify(data.events.map(e=>[e.id,e.state,e.detail,...e.teams.map(t=>t.score)]));const key='ws:'+selection,prior=scoreSnapshots.get(key);scoreSnapshots.set(key,signature);if(prior===signature)continue;for(const ws of sockets)if(ws.readyState===1&&ws.selection===selection)ws.send(JSON.stringify({type:'scores',data}));}catch(e){console.error('Realtime poll failed:',e.message);}
+ }
+}
+setInterval(()=>pollRealtime().catch(console.error),12000);
+wsServer.on('connection',socket=>socket.on('message',raw=>{try{const d=JSON.parse(String(raw));if(d.type==='subscribe'&&validLeague(d.league)&&/^[0-9]{8}$/.test(d.date))socket.selection=d.league+':'+d.date;}catch{}}));
 const cleanName=s=>String(s||'').trim().slice(0,24).toLowerCase();
 
 try { const lines=(await readFile(CHAT_FILE,'utf8')).trim().split('\n').slice(-1500);for(const line of lines){try{const msg=JSON.parse(line);if(!chatRooms.has(msg.room))chatRooms.set(msg.room,[]);chatRooms.get(msg.room).push(msg);}catch{}}for(const [key,items] of chatRooms)chatRooms.set(key,items.slice(-100));}catch{}
@@ -115,9 +136,32 @@ async function getScores(league,date){
   }catch(e){if(prior)return {...prior.data,stale:true};throw e;}
 }
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8'};
-http.createServer(async(req,res)=>{
+const httpServer=http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://localhost');
+    if(url.pathname==='/api/auth'){
+      if(req.method==='GET'){const a=accountOf(req);return json(res,{user:a?safeAccount(a):null});}
+      if(req.method!=='POST')return json(res,{error:'Method not allowed'},405);
+      const ip=req.socket.remoteAddress||'unknown',now=Date.now();
+      if(now-(accountRate.get(ip)||0)<1200)return json(res,{error:'Please wait before trying again'},429);
+      accountRate.set(ip,now);
+      let body='';for await(const chunk of req){body+=chunk;if(body.length>3000)return json(res,{error:'Too large'},413);}
+      let d;try{d=JSON.parse(body)}catch{return json(res,{error:'Invalid JSON'},400)}
+      const username=String(d.username||'').trim().toLowerCase(),password=String(d.password||'');
+      if(d.action==='register'){
+       if(!/^[a-z0-9_]{3,24}$/.test(username)||password.length<12||password.length>128)return json(res,{error:'Username must be 3–24 letters/numbers/underscores; password 12–128 characters'},400);
+       if(accounts.some(a=>a.username===username))return json(res,{error:'Username unavailable'},409);
+       const salt=randomBytes(16).toString('hex'),account={id:randomBytes(16).toString('hex'),username,salt,passwordHash:hashPassword(password,salt),createdAt:new Date().toISOString()};
+       accounts.push(account);await saveAccounts();
+      }else if(d.action==='login'){
+       const account=accounts.find(a=>a.username===username);
+       if(!account)return json(res,{error:'Invalid credentials'},401);
+       const expected=Buffer.from(account.passwordHash,'hex'),actual=Buffer.from(hashPassword(password,account.salt),'hex');
+       if(!timingSafeEqual(expected,actual))return json(res,{error:'Invalid credentials'},401);
+      }else return json(res,{error:'Unknown action'},400);
+      const account=accounts.find(a=>a.username===username),token=randomBytes(32).toString('hex');
+      sessions.set(token,{id:account.id,expires:now+7*86400000});return json(res,{token,user:safeAccount(account)});
+    }
     if(url.pathname==='/api/news'){
       const league=(url.searchParams.get('league')||'NFL').toUpperCase();
       if(!validLeague(league))return json(res,{error:'Invalid league'},400);
@@ -169,9 +213,17 @@ http.createServer(async(req,res)=>{
       }
       if(!adminToken||req.headers['x-admin-token']!==adminToken)return json(res,{error:'Unauthorized'},401);
       const name=cleanName(data.name);
-      if(data.action==='list')return json(res,{reports:moderation.reports.slice(-100).map(r=>({...r,message:(chatRooms.get(r.room)||[]).find(m=>m.id===r.id)||null})),blocked:[...moderation.blocked],muted:[...moderation.muted]});
+      if(data.action==='list')return json(res,{accounts:accounts.map(a=>({...safeAccount(a),banned:!!a.banned,mutedUntil:a.mutedUntil||0})),reports:moderation.reports.slice(-100).map(r=>({...r,message:(chatRooms.get(r.room)||[]).find(m=>m.id===r.id)||null})),blocked:[...moderation.blocked],muted:[...moderation.muted]});
       if(data.action==='dismiss'){moderation.reports=moderation.reports.filter(r=>!(r.room===data.room&&r.id===data.id));await saveModeration();return json(res,{ok:true});}
-      if(data.action==='delete'){const messages=chatRooms.get(data.room)||[];chatRooms.set(data.room,messages.filter(m=>m.id!==data.id));moderation.reports=moderation.reports.filter(r=>!(r.room===data.room&&r.id===data.id));await saveModeration();return json(res,{ok:true});}
+      if(data.action==='banaccount'||data.action==='unbanaccount'||data.action==='muteaccount'||data.action==='unmuteaccount'){
+       const account=accounts.find(a=>a.id===data.accountId||a.username===String(data.name||'').toLowerCase());if(!account)return json(res,{error:'Account not found'},404);
+       if(data.action==='banaccount')account.banned=true;
+       if(data.action==='unbanaccount')account.banned=false;
+       if(data.action==='muteaccount')account.mutedUntil=Date.now()+Math.min(1440,Math.max(1,Number(data.minutes)||60))*60000;
+       if(data.action==='unmuteaccount')account.mutedUntil=0;
+       await saveAccounts();return json(res,{ok:true});
+      }
+      if(data.action==='delete'){const messages=chatRooms.get(data.room)||[];chatRooms.set(data.room,messages.filter(m=>m.id!==data.id));moderation.reports=moderation.reports.filter(r=>!(r.room===data.room&&r.id===data.id));await saveModeration();publish({type:'chat-delete',room:data.room,id:data.id});return json(res,{ok:true});}
       if(!name)return json(res,{error:'Nickname required'},400);
       if(data.action==='ban')moderation.blocked.add(name);
       else if(data.action==='unban')moderation.blocked.delete(name);
@@ -189,15 +241,18 @@ http.createServer(async(req,res)=>{
       if(now-(chatRate.get(ip)||0)<3000)return json(res,{error:'Wait 3 seconds between messages'},429);
       let body='';for await(const chunk of req){body+=chunk;if(body.length>2048)return json(res,{error:'Message too large'},413);}
       let data;try{data=JSON.parse(body)}catch{return json(res,{error:'Invalid JSON'},400)}
-      const name=String(data.name||'Guest').trim().slice(0,24),message=String(data.message||'').trim().slice(0,400);
+      const account=accountOf(req);if(!account)return json(res,{error:'Sign in to send messages'},401);
+      if(account.banned)return json(res,{error:'Account banned from chat'},403);
+      if((account.mutedUntil||0)>now)return json(res,{error:'Account temporarily muted'},403);
+      const name=account.username,message=String(data.message||'').trim().slice(0,400);
       if(!message||!name)return json(res,{error:'Name and message required'},400);
       if(moderation.blocked.has(cleanName(name)))return json(res,{error:'Nickname blocked by moderator'},403);
       if((moderation.muted.get(cleanName(name))||0)>now)return json(res,{error:'Nickname temporarily muted'},403);
       if(/https?:\/\/|www\.|discord\.gg\//i.test(message))return json(res,{error:'Links are not permitted in public chat'},400);
-      const item={room,name,message,time:new Date().toISOString(),id:now.toString(36)+Math.random().toString(36).slice(2,7)};
+      const item={room,name,accountId:account.id,message,time:new Date().toISOString(),id:now.toString(36)+Math.random().toString(36).slice(2,7)};
       chatRate.set(ip,now);if(!chatRooms.has(room))chatRooms.set(room,[]);const messages=chatRooms.get(room);messages.push(item);if(messages.length>100)messages.shift();
       await mkdir(path.dirname(CHAT_FILE),{recursive:true});await appendFile(CHAT_FILE,JSON.stringify(item)+'\n');
-      return json(res,{message:item},201);
+      publish({type:'chat',room,message:item});return json(res,{message:item},201);
     }
     if(url.pathname==='/api/calendar.ics'){
       const league=(url.searchParams.get('league')||'NFL').toUpperCase(),date=url.searchParams.get('date')||ymd(new Date());
@@ -230,4 +285,6 @@ http.createServer(async(req,res)=>{
     const data=await readFile(file);
     res.writeHead(200,{'Content-Type':mime[path.extname(file)],'Cache-Control':'no-cache','X-Content-Type-Options':'nosniff'});res.end(data);
   }catch(e){res.writeHead(502,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'Score provider unavailable. Try again shortly.'}));}
-}).listen(PORT,'0.0.0.0',()=>console.log('SportsMania listening on '+PORT));
+});
+httpServer.on('upgrade',(req,socket,head)=>{const url=new URL(req.url,'http://localhost');if(url.pathname!=='/ws'){socket.destroy();return;}const origin=req.headers.origin;try{if(origin&&new URL(origin).host!==req.headers.host){socket.destroy();return;}}catch{socket.destroy();return;}wsServer.handleUpgrade(req,socket,head,ws=>wsServer.emit('connection',ws,req));});
+httpServer.listen(PORT,'0.0.0.0',()=>console.log('SportsMania listening on '+PORT));
