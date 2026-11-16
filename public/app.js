@@ -129,9 +129,13 @@ function extrasMarkup(g){
  gameDetailMarkup(g)+'<button class="play-toggle" data-chat-toggle="'+esc(g.id)+'">💬 Game chat</button>'+chatMarkup(g);
 }
 const chats=new Map();
+const auth={token:sessionStorage.getItem('sportsmania:session')||'',user:null};
+async function authenticate(action,username,password){const response=await fetch(api('auth'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,username,password})});const data=await response.json();if(!response.ok)throw Error(data.error||'Authentication failed');auth.token=data.token;auth.user=data.user;sessionStorage.setItem('sportsmania:session',auth.token);renderAuth();draw();}
+function renderAuth(){const el=document.getElementById('auth-status');if(!el)return;el.textContent=auth.user?'Signed in: '+auth.user.username:'Sign in to chat';document.getElementById('auth-form').hidden=!!auth.user;document.getElementById('logout').hidden=!auth.user;}
+async function restoreAuth(){if(!auth.token)return;try{const r=await fetch(api('auth'),{headers:{Authorization:'Bearer '+auth.token}}),d=await r.json();auth.user=d.user;if(!auth.user){auth.token='';sessionStorage.removeItem('sportsmania:session');}renderAuth();}catch{}}
 function chatMarkup(g){
  const key=state.league+':'+g.id,c=chats.get(key);if(!c?.open)return '';
- return '<div class="chat-panel"><div class="chat-log">'+(c.messages||[]).map(m=>'<div><small>'+esc(m.name)+' · '+esc(new Date(m.time).toLocaleTimeString())+'</small><p>'+esc(m.message)+'</p><button class="report-btn" data-report="'+esc(m.id)+'" data-room="'+esc(key)+'">Report</button></div>').join('')+'</div><form data-chat-form="'+esc(g.id)+'"><input name="name" maxlength="24" placeholder="Nickname" value="'+esc(localStorage.getItem('sportsmania:nick')||'')+'" required><input name="message" maxlength="400" placeholder="Message" required><button type="submit">Send</button></form><small>Public chat. Do not share personal information. Messages are stored on this server.</small></div>';
+ return '<div class="chat-panel"><div class="chat-log">'+(c.messages||[]).map(m=>'<div><small>'+esc(m.name)+' · '+esc(new Date(m.time).toLocaleTimeString())+'</small><p>'+esc(m.message)+'</p><button class="report-btn" data-report="'+esc(m.id)+'" data-room="'+esc(key)+'">Report</button></div>').join('')+'</div><form data-chat-form="'+esc(g.id)+'"'+(auth.user?'':' hidden')+'><input name="name" maxlength="24" placeholder="Nickname" value="'+esc(localStorage.getItem('sportsmania:nick')||'')+'" required><input name="message" maxlength="400" placeholder="Message" required><button type="submit">Send</button></form><small>Public chat. Do not share personal information. Messages are stored on this server.</small></div>';
 }
 async function chatLoad(id){
  const league=state.league,key=league+':'+id,c=chats.get(key)||{};if(!c.open)return;
@@ -158,12 +162,12 @@ $('#leagues').addEventListener('click',e=>{const b=e.target.closest('[data-leagu
 $('#filters').addEventListener('click',e=>{const b=e.target.closest('[data-filter]');if(!b)return;state.filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));draw()});
 $('#games').addEventListener('click',e=>{const compare=e.target.closest('[data-compare]');if(compare){comparePlayers(compare.closest('.detail-panel'));return;}const report=e.target.closest('[data-report]');if(report){if(!confirm('Report this message to moderators?'))return;fetch(api('moderation'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'report',room:report.dataset.room,id:report.dataset.report})}).then(r=>{alert(r.ok?'Report submitted':'Unable to report')});return;}const detail=e.target.closest('[data-game-detail]');if(detail){gameDetail(detail.dataset.gameDetail);return;}const chat=e.target.closest('[data-chat-toggle]');if(chat){const key=state.league+':'+chat.dataset.chatToggle,c=chats.get(key)||{};chats.set(key,{...c,open:!c.open});draw();if(!c.open)chatLoad(chat.dataset.chatToggle);return;}const toggle=e.target.closest('[data-play-toggle]');if(toggle){const id=toggle.dataset.playToggle,key=state.league+':'+id,old=playPanels.get(key);if(old?.open){playPanels.set(key,{...old,open:false});draw()}else loadPlays(id);return;}const refresh=e.target.closest('[data-play-refresh]');if(refresh){loadPlays(refresh.dataset.playRefresh,true);return;}const b=e.target.closest('[data-fav]');if(!b)return;const v=b.dataset.fav;favorites.has(v)?favorites.delete(v):favorites.add(v);localStorage.setItem('sportsmania:favorites',JSON.stringify([...favorites]));if(alertSettings.enabled)syncPush(true).catch(()=>{});draw()});
 $('#prev').onclick=()=>changeDay(-1);$('#next').onclick=()=>changeDay(1);$('#today').onclick=()=>setDate(today());$('#date').onchange=e=>{if(e.target.value)setDate(e.target.value)};$('#refresh').onclick=load;
-$('#date').value=state.date;drawLeagues();clock();setInterval(clock,30000);load();setInterval(()=>{if(!document.hidden)load()},15000);
+$('#date').value=state.date;drawLeagues();clock();setInterval(clock,30000);load();setInterval(()=>{if(!document.hidden&&!realtimeConnected)load()},30000);
 
 $('#feature-panel').hidden=true;
 document.querySelector('.feature-nav').addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(!b)return;featureState.view=b.dataset.view;document.querySelectorAll('[data-view]').forEach(x=>x.classList.toggle('active',x===b));featureLoad();});
-$('#games').addEventListener('submit',async e=>{const form=e.target.closest('[data-chat-form]');if(!form)return;e.preventDefault();const id=form.dataset.chatForm,league=state.league,room=league+':'+id,name=form.elements.name.value.trim(),message=form.elements.message.value.trim();if(!message)return;localStorage.setItem('sportsmania:nick',name);try{const r=await fetch(api('chat?room='+encodeURIComponent(room)),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,message})});const data=await r.json();if(!r.ok)throw Error(data.error||'Send failed');await chatLoad(id);}catch(err){alert(err.message)}});
-setInterval(()=>{if(document.hidden)return;for(const [key,c] of chats){if(c.open&&key.startsWith(state.league+':'))chatLoad(key.slice(key.indexOf(':')+1));}},12000);
+$('#games').addEventListener('submit',async e=>{const form=e.target.closest('[data-chat-form]');if(!form)return;e.preventDefault();const id=form.dataset.chatForm,league=state.league,room=league+':'+id,message=form.elements.message.value.trim();if(!message)return;try{const r=await fetch(api('chat?room='+encodeURIComponent(room)),{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+auth.token},body:JSON.stringify({message})});const data=await r.json();if(!r.ok)throw Error(data.error||'Send failed');await chatLoad(id);}catch(err){alert(err.message)}});
+setInterval(()=>{if(document.hidden||realtimeConnected)return;for(const [key,c] of chats){if(c.open&&key.startsWith(state.league+':'))chatLoad(key.slice(key.indexOf(':')+1));}},12000);
 
 const alertButton=document.createElement('button');alertButton.className='refresh';alertButton.id='alert-toggle';alertButton.textContent=alertSettings.enabled?'🔔 Alerts on':'🔕 Enable favorite alerts';document.querySelector('.toolbar').append(alertButton);
 alertButton.onclick=async()=>{if(alertSettings.enabled){alertSettings.enabled=false;}else{if(!('Notification' in window)){alert('This browser does not support notifications.');return;}const permission=await Notification.requestPermission();if(permission!=='granted'){alert('Notifications were not permitted.');return;}alertSettings.enabled=true;}localStorage.setItem('sportsmania:alerts',JSON.stringify(alertSettings));alertButton.textContent=alertSettings.enabled?'🔔 Alerts on':'🔕 Enable favorite alerts';};
@@ -181,3 +185,26 @@ async function syncPush(enabled){
 const oldAlertHandler=alertButton.onclick;
 alertButton.onclick=async()=>{await oldAlertHandler();try{await syncPush(alertSettings.enabled);alertButton.textContent=alertSettings.enabled?'🔔 Background alerts on':'🔕 Enable favorite alerts';}catch(e){if(alertSettings.enabled)alert(e.message+' In-page alerts remain available.');}};
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&alertSettings.enabled)syncPush(true).catch(()=>{});});
+
+let realtimeConnected=false,realtimeSocket=null,retryDelay=1000;
+function connectRealtime(){
+ const url=new URL('ws',document.baseURI);url.protocol=location.protocol==='https:'?'wss:':'ws:';
+ const ws=new WebSocket(url);realtimeSocket=ws;
+ ws.onopen=()=>{realtimeConnected=true;retryDelay=1000;ws.send(JSON.stringify({type:'subscribe',league:state.league,date:dateKey()}));document.getElementById('realtime-status').textContent='● Live connection';};
+ ws.onmessage=e=>{try{const event=JSON.parse(e.data);
+  if(event.type==='scores'&&event.data.league===state.league&&event.data.date===dateKey()){const before=JSON.stringify((state.data?.events||[]).map(g=>[g.id,g.state,...g.teams.map(t=>t.score)]));const after=JSON.stringify((event.data.events||[]).map(g=>[g.id,g.state,...g.teams.map(t=>t.score)]));state.data=event.data;notifyScores(event.data);if(before!==after&&featureState.view==='scores'&&!document.querySelector('input[name="message"]:focus'))draw();document.getElementById('lastUpdate').textContent='Live · '+new Date().toLocaleTimeString();}
+  if(event.type==='chat'){const chat=chats.get(event.room);if(chat?.open){chats.set(event.room,{...chat,messages:[...(chat.messages||[]),event.message].slice(-100)});if(!document.querySelector('input[name="message"]:focus'))draw();}}
+  if(event.type==='chat-delete'){const chat=chats.get(event.room);if(chat){chats.set(event.room,{...chat,messages:(chat.messages||[]).filter(m=>m.id!==event.id)});draw();}}
+ }catch{}};
+ ws.onclose=()=>{realtimeConnected=false;document.getElementById('realtime-status').textContent='○ Reconnecting';setTimeout(connectRealtime,retryDelay);retryDelay=Math.min(30000,retryDelay*2);};
+ ws.onerror=()=>ws.close();
+}
+document.getElementById('auth-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;try{await authenticate(f.elements.action.value,f.elements.username.value,f.elements.password.value);f.reset();}catch(err){alert(err.message);}});
+document.getElementById('logout').onclick=()=>{auth.user=null;auth.token='';sessionStorage.removeItem('sportsmania:session');renderAuth();draw();};
+restoreAuth();renderAuth();connectRealtime();
+const subscribeRealtime=()=>{if(realtimeSocket?.readyState===1)realtimeSocket.send(JSON.stringify({type:'subscribe',league:state.league,date:dateKey()}));};
+document.getElementById('leagues').addEventListener('click',subscribeRealtime);
+document.getElementById('date').addEventListener('change',subscribeRealtime);
+document.getElementById('prev').addEventListener('click',subscribeRealtime);
+document.getElementById('next').addEventListener('click',subscribeRealtime);
+document.getElementById('today').addEventListener('click',subscribeRealtime);
