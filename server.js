@@ -2,6 +2,8 @@ import http from 'node:http';
 import { readFile, mkdir, appendFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { writeFile } from 'node:fs/promises';
+import webpush from 'web-push';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3100);
@@ -19,6 +21,30 @@ const MOD_FILE=path.join(root,'data','moderation.json');
 try{const m=JSON.parse(await readFile(MOD_FILE,'utf8'));moderation.blocked=new Set(m.blocked||[]);moderation.muted=new Map(m.muted||[]);moderation.reports=m.reports||[];}catch{}
 const saveModeration=async()=>{await mkdir(path.dirname(MOD_FILE),{recursive:true});await (await import('node:fs/promises')).writeFile(MOD_FILE,JSON.stringify({blocked:[...moderation.blocked],muted:[...moderation.muted],reports:moderation.reports.slice(-500)}));};
 const adminToken=process.env.SPORTSMANIA_ADMIN_TOKEN||'';
+const PUSH_FILE=path.join(root,'data','push.json');
+let pushSubscriptions=[];
+try{pushSubscriptions=JSON.parse(await readFile(PUSH_FILE,'utf8'));if(!Array.isArray(pushSubscriptions))pushSubscriptions=[];}catch{}
+const vapidPublic=process.env.VAPID_PUBLIC_KEY||'',vapidPrivate=process.env.VAPID_PRIVATE_KEY||'';
+if(vapidPublic&&vapidPrivate)webpush.setVapidDetails(process.env.VAPID_SUBJECT||'mailto:admin@casualdisaster.me',vapidPublic,vapidPrivate);
+const pushReady=!!(vapidPublic&&vapidPrivate);
+const savePush=async()=>{await mkdir(path.dirname(PUSH_FILE),{recursive:true});await writeFile(PUSH_FILE,JSON.stringify(pushSubscriptions));};
+const scoreSnapshots=new Map();
+async function pollPush(){
+ if(!pushReady||!pushSubscriptions.length)return;
+ const today=ymd(new Date());
+ for(const league of [...new Set(pushSubscriptions.flatMap(s=>s.teams.map(t=>t.split(':')[1])).filter(validLeague))]){
+  try{const data=await getScores(league,today);for(const game of data.events){
+   const key=league+':'+game.id,signature=game.state+'|'+game.teams.map(t=>t.score).join(':');
+   const old=scoreSnapshots.get(key);scoreSnapshots.set(key,signature);
+   if(!old||old===signature)continue;
+   const relevant=pushSubscriptions.filter(s=>game.teams.some(t=>s.teams.includes(t.abbreviation+':'+league)));
+   const title=old.split('|')[0]!==game.state?(game.state==='in'?'Game started':game.state==='post'?'Final score':'Game update'):'Score update';
+   const body=game.teams.map(t=>t.abbreviation+' '+(t.score??'–')).join(' · ');
+   for(const sub of relevant){try{await webpush.sendNotification(sub.subscription,JSON.stringify({title:title+' · '+game.name,body,url:'/sportsmania/'}),{TTL:120});}catch(e){if(e.statusCode===404||e.statusCode===410){pushSubscriptions=pushSubscriptions.filter(s=>s.subscription.endpoint!==sub.subscription.endpoint);await savePush();}}}
+  }}catch(e){console.error('Push polling failed:',league,e.message);}
+ }
+}
+setInterval(()=>{pollPush().catch(e=>console.error(e));},30000);
 const cleanName=s=>String(s||'').trim().slice(0,24).toLowerCase();
 
 try { const lines=(await readFile(CHAT_FILE,'utf8')).trim().split('\n').slice(-1500);for(const line of lines){try{const msg=JSON.parse(line);if(!chatRooms.has(msg.room))chatRooms.set(msg.room,[]);chatRooms.get(msg.room).push(msg);}catch{}}for(const [key,items] of chatRooms)chatRooms.set(key,items.slice(-100));}catch{}
@@ -119,6 +145,19 @@ http.createServer(async(req,res)=>{
         teamStats:(box.teams||[]).map(t=>({team:t.team?.displayName,stats:(t.statistics||[]).slice(0,25).map(s=>({name:s.label||s.name,value:s.displayValue}))})),
         scoring:(raw.scoringPlays||[]).map(p=>({text:p.text||p.description||'',clock:p.clock?.displayValue||'',period:p.period?.number||'',team:p.team?.abbreviation||''})).slice(-30),note:'Statistics depend on ESPN event coverage',stale:!!raw.stale});
     }
+    if(url.pathname==='/api/push/config')return json(res,{enabled:pushReady,publicKey:pushReady?vapidPublic:''});
+    if(url.pathname==='/api/push/subscribe'){
+      if(req.method!=='POST')return json(res,{error:'Method not allowed'},405);
+      if(!pushReady)return json(res,{error:'Push not configured'},503);
+      let body='';for await(const chunk of req){body+=chunk;if(body.length>10000)return json(res,{error:'Too large'},413);}
+      let data;try{data=JSON.parse(body)}catch{return json(res,{error:'Invalid JSON'},400)}
+      const sub=data.subscription,teams=Array.isArray(data.teams)?data.teams.filter(t=>/^[A-Za-z0-9_-]{1,12}:(NFL|NBA|MLB|NHL|NCAAF|NCAAB|WNBA|MLS|EPL|UCL)$/.test(t)).slice(0,40):[];
+      if(!sub||typeof sub.endpoint!=='string'||!sub.endpoint.startsWith('https://')||sub.endpoint.length>2000||!sub.keys?.p256dh||!sub.keys?.auth)return json(res,{error:'Invalid subscription'},400);
+      pushSubscriptions=pushSubscriptions.filter(s=>s.subscription.endpoint!==sub.endpoint);
+      if(data.enabled!==false&&teams.length)pushSubscriptions.push({subscription:sub,teams});
+      if(pushSubscriptions.length>5000)pushSubscriptions=pushSubscriptions.slice(-5000);
+      await savePush();return json(res,{ok:true,teams:teams.length});
+    }
     if(url.pathname==='/api/moderation'){
       if(req.method!=='POST')return json(res,{error:'Method not allowed'},405);
       let body='';for await(const chunk of req){body+=chunk;if(body.length>4096)return json(res,{error:'Too large'},413);}
@@ -130,7 +169,9 @@ http.createServer(async(req,res)=>{
       }
       if(!adminToken||req.headers['x-admin-token']!==adminToken)return json(res,{error:'Unauthorized'},401);
       const name=cleanName(data.name);
-      if(data.action==='list')return json(res,{reports:moderation.reports.slice(-100),blocked:[...moderation.blocked],muted:[...moderation.muted]});
+      if(data.action==='list')return json(res,{reports:moderation.reports.slice(-100).map(r=>({...r,message:(chatRooms.get(r.room)||[]).find(m=>m.id===r.id)||null})),blocked:[...moderation.blocked],muted:[...moderation.muted]});
+      if(data.action==='dismiss'){moderation.reports=moderation.reports.filter(r=>!(r.room===data.room&&r.id===data.id));await saveModeration();return json(res,{ok:true});}
+      if(data.action==='delete'){const messages=chatRooms.get(data.room)||[];chatRooms.set(data.room,messages.filter(m=>m.id!==data.id));moderation.reports=moderation.reports.filter(r=>!(r.room===data.room&&r.id===data.id));await saveModeration();return json(res,{ok:true});}
       if(!name)return json(res,{error:'Nickname required'},400);
       if(data.action==='ban')moderation.blocked.add(name);
       else if(data.action==='unban')moderation.blocked.delete(name);
@@ -184,7 +225,7 @@ http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(data));return;
     }
     const requested=url.pathname==='/'?'/index.html':url.pathname;
-    if(!['/index.html','/styles.css','/app.js'].includes(requested)){res.writeHead(404);res.end('Not found');return;}
+    if(!['/index.html','/styles.css','/app.js','/sw.js','/admin.html','/admin.js'].includes(requested)){res.writeHead(404);res.end('Not found');return;}
     const file=path.join(root,'public',requested);
     const data=await readFile(file);
     res.writeHead(200,{'Content-Type':mime[path.extname(file)],'Cache-Control':'no-cache','X-Content-Type-Options':'nosniff'});res.end(data);
