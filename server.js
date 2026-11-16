@@ -49,11 +49,11 @@ async function pollPush(){
 setInterval(()=>{pollPush().catch(e=>console.error(e));},30000);
 const ACCOUNTS_FILE=path.join(root,'data','accounts.json');
 let accounts=[];try{accounts=JSON.parse(await readFile(ACCOUNTS_FILE,'utf8'));if(!Array.isArray(accounts))accounts=[];}catch{}
-const sessions=new Map(),accountRate=new Map();
+const sessions=new Map(),accountRate=new Map(),resetTokens=new Map();
 const saveAccounts=async()=>{await mkdir(path.dirname(ACCOUNTS_FILE),{recursive:true});await writeFile(ACCOUNTS_FILE,JSON.stringify(accounts));};
 const hashPassword=(password,salt)=>scryptSync(password,salt,64).toString('hex');
 const accountOf=req=>{const token=(req.headers.authorization||'').match(/^Bearer ([a-f0-9]{64})$/i)?.[1];const session=sessions.get(token);if(!session)return null;if(session.expires<Date.now()){sessions.delete(token);return null;}return accounts.find(a=>a.id===session.id)||null;};
-const safeAccount=a=>({id:a.id,username:a.username,createdAt:a.createdAt});
+const safeAccount=a=>({id:a.id,username:a.username,createdAt:a.createdAt,avatar:a.avatar||'🏆',favorites:a.favorites||[]});
 const wsServer=new WebSocketServer({noServer:true,maxPayload:2048});
 const sockets=new Set();
 function publish(event){const raw=JSON.stringify(event);for(const socket of sockets)if(socket.readyState===1)socket.send(raw);}
@@ -139,6 +139,27 @@ const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8',
 const httpServer=http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://localhost');
+    if(url.pathname==='/api/profile'){
+      const user=accountOf(req);if(!user)return json(res,{error:'Sign in required'},401);
+      if(req.method==='GET')return json(res,{user:safeAccount(user)});
+      if(req.method!=='POST')return json(res,{error:'Method not allowed'},405);
+      let body='';for await(const chunk of req){body+=chunk;if(body.length>4000)return json(res,{error:'Too large'},413);}
+      let d;try{d=JSON.parse(body)}catch{return json(res,{error:'Invalid JSON'},400)}
+      if(d.action==='update'){
+       if(d.avatar!==undefined){if(!['🏆','🏈','🏀','⚾','🏒','⚽','🎮','🔥','⭐','🐐'].includes(d.avatar))return json(res,{error:'Invalid avatar'},400);user.avatar=d.avatar;}
+       if(d.favorites!==undefined){if(!Array.isArray(d.favorites)||d.favorites.length>100||d.favorites.some(t=>typeof t!=='string'||!/^[A-Za-z0-9_-]{1,12}:(NFL|NBA|MLB|NHL|NCAAF|NCAAB|WNBA|MLS|EPL|UCL)$/.test(t)))return json(res,{error:'Invalid favorites'},400);user.favorites=[...new Set(d.favorites)];}
+       await saveAccounts();return json(res,{user:safeAccount(user)});
+      }
+      if(d.action==='password'){
+       const old=String(d.currentPassword||''),next=String(d.newPassword||'');
+       if(next.length<12||next.length>128)return json(res,{error:'New password must be 12–128 characters'},400);
+       if(!timingSafeEqual(Buffer.from(user.passwordHash,'hex'),Buffer.from(hashPassword(old,user.salt),'hex')))return json(res,{error:'Current password incorrect'},403);
+       user.salt=randomBytes(16).toString('hex');user.passwordHash=hashPassword(next,user.salt);await saveAccounts();
+       for(const [token,session] of sessions)if(session.id===user.id)sessions.delete(token);
+       return json(res,{ok:true,loginRequired:true});
+      }
+      return json(res,{error:'Unknown action'},400);
+    }
     if(url.pathname==='/api/auth'){
       if(req.method==='GET'){const a=accountOf(req);return json(res,{user:a?safeAccount(a):null});}
       if(req.method!=='POST')return json(res,{error:'Method not allowed'},405);
@@ -148,6 +169,14 @@ const httpServer=http.createServer(async(req,res)=>{
       let body='';for await(const chunk of req){body+=chunk;if(body.length>3000)return json(res,{error:'Too large'},413);}
       let d;try{d=JSON.parse(body)}catch{return json(res,{error:'Invalid JSON'},400)}
       const username=String(d.username||'').trim().toLowerCase(),password=String(d.password||'');
+      if(d.action==='reset'){
+       const code=String(d.resetToken||''),record=resetTokens.get(code),next=String(d.newPassword||'');
+       if(!record||record.expires<Date.now()||next.length<12||next.length>128)return json(res,{error:'Invalid/expired reset code or password'},400);
+       const account=accounts.find(a=>a.id===record.id);if(!account)return json(res,{error:'Account unavailable'},404);
+       account.salt=randomBytes(16).toString('hex');account.passwordHash=hashPassword(next,account.salt);resetTokens.delete(code);
+       for(const [token,session] of sessions)if(session.id===account.id)sessions.delete(token);
+       await saveAccounts();return json(res,{ok:true});
+      }
       if(d.action==='register'){
        if(!/^[a-z0-9_]{3,24}$/.test(username)||password.length<12||password.length>128)return json(res,{error:'Username must be 3–24 letters/numbers/underscores; password 12–128 characters'},400);
        if(accounts.some(a=>a.username===username))return json(res,{error:'Username unavailable'},409);
@@ -215,6 +244,12 @@ const httpServer=http.createServer(async(req,res)=>{
       const name=cleanName(data.name);
       if(data.action==='list')return json(res,{accounts:accounts.map(a=>({...safeAccount(a),banned:!!a.banned,mutedUntil:a.mutedUntil||0})),reports:moderation.reports.slice(-100).map(r=>({...r,message:(chatRooms.get(r.room)||[]).find(m=>m.id===r.id)||null})),blocked:[...moderation.blocked],muted:[...moderation.muted]});
       if(data.action==='dismiss'){moderation.reports=moderation.reports.filter(r=>!(r.room===data.room&&r.id===data.id));await saveModeration();return json(res,{ok:true});}
+      if(data.action==='resetaccount'){
+       const account=accounts.find(a=>a.id===data.accountId);if(!account)return json(res,{error:'Account not found'},404);
+       for(const [code,record] of resetTokens)if(record.id===account.id)resetTokens.delete(code);
+       const code=randomBytes(24).toString('hex');resetTokens.set(code,{id:account.id,expires:Date.now()+15*60000});
+       return json(res,{ok:true,resetToken:code,expiresMinutes:15});
+      }
       if(data.action==='banaccount'||data.action==='unbanaccount'||data.action==='muteaccount'||data.action==='unmuteaccount'){
        const account=accounts.find(a=>a.id===data.accountId||a.username===String(data.name||'').toLowerCase());if(!account)return json(res,{error:'Account not found'},404);
        if(data.action==='banaccount')account.banned=true;
