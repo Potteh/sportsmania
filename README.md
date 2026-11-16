@@ -77,3 +77,10 @@ All features use built-in Node.js APIs with no new npm dependencies. The site's 
 - Push subscriptions are stored in `data/push.json`. The server checks followed leagues every 30 seconds and sends score/state-change alerts only after it has seen an earlier snapshot. Browser must allow notifications and the site must use HTTPS. Delivery depends on browser push services. The worker scope is `/sportsmania/`.
 - Player comparisons now show paired bars for each statistic. Cross-category comparisons are descriptive rather than statistically meaningful.
 - This is still a prototype: public chat needs authenticated identities, durable deletion semantics, stronger abuse controls and a retention/privacy policy before large-scale deployment.
+
+## WebSockets and account-based chat
+- `ws` serves a same-origin WebSocket endpoint at `/sportsmania/ws` (upstream `/ws`). Scoreboards receive server updates roughly every 12 seconds, with HTTP polling fallback. Chat posts broadcast instantly to connected clients.
+- Account creation/login via `/api/auth`, using scrypt password hashes with random salts. Passwords are never stored in plaintext. Accounts persist in `data/accounts.json`. Session bearer tokens are kept in browser sessionStorage and server memory; sessions expire after seven days and reset on process restart.
+- Sending chat now requires a registered account. Existing historical nickname messages remain readable. Moderators can ban/unban and mute/unmute accounts from the dashboard; nickname moderation remains for legacy messages.
+- Nginx must forward WebSocket upgrade headers for the SportsMania location. Add `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";` to its existing `location /sportsmania/` block. Preserve existing proxy_pass path rewriting.
+- Production hardening still needed: stronger per-account and per-IP rate limits, persistent sessions/revocation, email verification, password reset, CSRF and security headers, audit logs, durable moderation deletion and database migrations. Do not treat this as production-grade identity management.
