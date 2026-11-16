@@ -53,3 +53,13 @@ If you previously edited `public/app.js` or `public/index.html` locally to hard-
 ## Play-by-play
 
 Expand **Play-by-play** on any game card to fetch the event's ESPN summary feed through `/api/plays?league=NFL&id=EVENT_ID`. The feed shows recent events newest first, game period, clock, scoring plays and score when available. It caches for 12 seconds; click **Refresh plays** to request an updated feed. Availability and completeness vary by sport and event, and the panel clearly reports when no play-by-play is supplied. This endpoint is unofficial and subject to provider changes.
+
+## Expanded features
+- **Game Center:** expandable team and player statistics from ESPN game summaries.
+- **News:** league-specific ESPN headlines, linked to their sources.
+- **Standings:** ESPN standings, where the league provides them.
+- **Predictions:** clearly labeled illustrative pregame win percentages from win-loss records, not a calibrated prediction or betting model. Unavailable when records are missing.
+- **Game chat:** public, nickname-based, per-event polling chat. Stored in `data/chat.jsonl`; 3-second IP rate limit and 400-character message cap. This is a basic prototype: add authentication, moderation, retention policy, spam protection, and reverse-proxy rate limiting before opening to a large public audience. Chat messages are publicly visible and persist across restarts.
+- **Calendar:** downloadable .ics calendar for the selected league and date.
+- **Odds:** displays odds only when the ESPN scoreboard provides them. No fabricated lines or historical movement data. Historical line movement requires a separately licensed provider and historical storage.
+All features use built-in Node.js APIs with no new npm dependencies. The site's relative URLs remain compatible with `/sportsmania/` behind Nginx.
