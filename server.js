@@ -131,7 +131,7 @@ http.createServer(async(req,res)=>{
       const league=(url.searchParams.get('league')||'NFL').toUpperCase(),date=url.searchParams.get('date')||ymd(new Date());
       if(!validLeague(league)||!/^[0-9]{8}$/.test(date))return json(res,{error:'Invalid calendar request'},400);
       const scores=await getScores(league,date);
-      const safe=s=>String(s||'').replace(/[\\,;]/g,'\\    if(url.pathname==='/api/plays'){').replace(/\r?\n/g,' ');
+      const safe=s=>String(s||'').replace(/[;,]/g,' ').replace(/\r?\n/g,' ');
       const stamp=s=>new Date(s).toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'');
       const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//SportsMania//Sports Calendar//EN','CALSCALE:GREGORIAN'];
       for(const game of scores.events){if(!game.date)continue;const start=new Date(game.date),end=new Date(start.getTime()+3*3600000);
