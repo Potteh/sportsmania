@@ -63,3 +63,10 @@ Expand **Play-by-play** on any game card to fetch the event's ESPN summary feed 
 - **Calendar:** downloadable .ics calendar for the selected league and date.
 - **Odds:** displays odds only when the ESPN scoreboard provides them. No fabricated lines or historical movement data. Historical line movement requires a separately licensed provider and historical storage.
 All features use built-in Node.js APIs with no new npm dependencies. The site's relative URLs remain compatible with `/sportsmania/` behind Nginx.
+
+## Alerts, moderation and player comparison
+- **Favorite alerts:** opt-in browser notifications when a followed team's game state or score changes while SportsMania is open and polling. Browser permission and HTTPS required. No background push service.
+- **Scoring timeline:** game summary scoring events, when available.
+- **Player comparison:** select two reported player stat lines in an expanded Game Center to compare. Comparisons are textual and source data may be incomplete.
+- **Chat moderation:** users can report messages. An operator can review reports and ban/unban or mute/unmute nicknames through `POST /api/moderation` with header `X-Admin-Token` matching `SPORTSMANIA_ADMIN_TOKEN`. Set a long random token in your PM2 environment; never commit it. Example JSON: `{"action":"list"}`, `{"action":"ban","name":"nickname"}`, `{"action":"mute","name":"nickname","minutes":60}`. Reports and actions persist in `data/moderation.json`. Public messages disallow links and enforce basic rate limits.
+- **Security warning:** nickname-based moderation is easily evaded. For a public community, add account authentication, IP-level abuse controls, administrator UI, moderation audit logs and a retention policy before relying on chat for production use.
