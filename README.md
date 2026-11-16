@@ -49,3 +49,7 @@ This project is committed to `Potteh/sportsmania`. Future changes made through G
 ## Updating an existing VPS checkout
 
 If you previously edited `public/app.js` or `public/index.html` locally to hard-code `/sportsmania/` paths, save your changes first and discard **only those two local path edits** before pulling this update. For example, inspect `git diff` and then run `git restore public/app.js public/index.html` **only if the diff contains no other work you want to keep**; otherwise use `git stash push -u`, pull, and selectively restore your unrelated changes. Then run `git pull --ff-only origin main` and `pm2 restart sportsmania`. Do not blindly `git stash pop` old subdirectory path edits, since the repository now handles paths automatically.
+
+## Play-by-play
+
+Expand **Play-by-play** on any game card to fetch the event's ESPN summary feed through `/api/plays?league=NFL&id=EVENT_ID`. The feed shows recent events newest first, game period, clock, scoring plays and score when available. It caches for 12 seconds; click **Refresh plays** to request an updated feed. Availability and completeness vary by sport and event, and the panel clearly reports when no play-by-play is supplied. This endpoint is unofficial and subject to provider changes.
